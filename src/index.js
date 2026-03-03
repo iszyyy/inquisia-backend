@@ -1,32 +1,30 @@
 import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
-import helmet from 'helmet'
 import morgan from 'morgan'
 import session from 'express-session'
 import { createClient } from 'redis'
 import connectRedis from 'connect-redis'
 import { fileURLToPath } from 'url'
 import path from 'path'
-import { pool } from './lib/db.js'
 import { fail } from './lib/response.js'
 
-import authRoutes         from './routes/auth.js'
-import publicRoutes       from './routes/public.js'
-import projectRoutes      from './routes/projects.js'
-import supervisorRoutes   from './routes/supervisor.js'
-import adminRoutes        from './routes/admin.js'
-import aiRoutes           from './routes/ai.js'
-import commentRoutes      from './routes/comments.js'
-import userRoutes         from './routes/users.js'
-import bookmarkRoutes     from './routes/bookmarks.js'
-import notificationRoutes from './routes/notifications.js'
+import authRoutes          from './routes/auth.js'
+import publicRoutes        from './routes/public.js'
+import projectRoutes       from './routes/projects.js'
+import supervisorRoutes    from './routes/supervisor.js'
+import adminRoutes         from './routes/admin.js'
+import aiRoutes            from './routes/ai.js'
+import commentRoutes       from './routes/comments.js'
+import userRoutes          from './routes/users.js'
+import bookmarkRoutes      from './routes/bookmarks.js'
+import notificationRoutes  from './routes/notifications.js'
 import changeRequestRoutes from './routes/changeRequests.js'
 
 const app = express()
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const UPLOAD_DIR = process.env.UPLOAD_DIR || '/opt/inquisia-backend/uploads'
 
+// ── CORS — allow same domain + localhost dev ──────────────────
 const allowedOrigins = (process.env.CORS_ORIGINS || '')
   .split(',').map(o => o.trim()).filter(Boolean)
 
@@ -38,11 +36,11 @@ app.use(cors({
   credentials: true,
 }))
 
-app.use(helmet())
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'))
 app.use(express.json({ limit: '2mb' }))
 app.use(express.urlencoded({ extended: true, limit: '2mb' }))
 
+// ── Redis session store ───────────────────────────────────────
 const redisClient = createClient({ url: process.env.REDIS_URL || 'redis://127.0.0.1:6379' })
 redisClient.on('error', (err) => console.error('[Redis]', err))
 await redisClient.connect()
@@ -57,14 +55,16 @@ app.use(session({
   saveUninitialized: false,
   cookie: {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+    secure: true,
+    sameSite: 'none',
     maxAge: 7 * 24 * 60 * 60 * 1000,
   },
 }))
 
+// ── Static files ──────────────────────────────────────────────
 app.use('/files', express.static(UPLOAD_DIR))
 
+// ── Routes ───────────────────────────────────────────────────
 app.use('/api/auth',          authRoutes)
 app.use('/api',               publicRoutes)
 app.use('/api/projects',      projectRoutes)
@@ -93,5 +93,5 @@ app.use((err, _req, res, _next) => {
 
 const PORT = process.env.PORT || 3000
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Inquisia] Server running on port ${PORT} (${process.env.NODE_ENV || 'development'})`)
+  console.log(`[Inquisia] Server running on port ${PORT}`)
 })

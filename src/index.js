@@ -18,11 +18,10 @@ import userRoutes          from './routes/users.js'
 import bookmarkRoutes      from './routes/bookmarks.js'
 import notificationRoutes  from './routes/notifications.js'
 import changeRequestRoutes from './routes/changeRequests.js'
+import updateRoutes        from './routes/update.js'
 
 const app = express()
 app.set('trust proxy', 1)
-
-const UPLOAD_DIR = process.env.UPLOAD_DIR || '/opt/inquisia-backend/uploads'
 
 // ── CORS ─────────────────────────────────────────────────────
 const allowedOrigins = (process.env.CORS_ORIGINS || '')
@@ -37,8 +36,8 @@ app.use(cors({
 }))
 
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'))
-app.use(express.json({ limit: '2mb' }))
-app.use(express.urlencoded({ extended: true, limit: '2mb' }))
+app.use(express.json({ limit: '50mb' }))
+app.use(express.urlencoded({ extended: true, limit: '50mb' }))
 
 // ── Session store (PostgreSQL) ────────────────────────────────
 const PgStore = connectPgSimple(session)
@@ -62,23 +61,26 @@ app.use(session({
 }))
 
 // ── Static files ──────────────────────────────────────────────
+const UPLOAD_DIR = process.env.UPLOAD_DIR || '/opt/inquisia-backend/uploads'
 app.use('/files', express.static(UPLOAD_DIR))
 
 // ── Routes ───────────────────────────────────────────────────
+// NOTE: Order matters. More specific paths must come before generic ones.
 app.use('/api/auth',          authRoutes)
 app.use('/api',               publicRoutes)
-app.use('/api/projects',      projectRoutes)
+app.use('/api/ai',            aiRoutes)            // /api/ai/elara, /api/ai/validate, etc.
+app.use('/api/projects',      projectRoutes)        // /api/projects/* (project CRUD)
+app.use('/api/projects',      aiRoutes)             // /api/projects/:id/ai/* (project AI)
 app.use('/api/supervisor',    supervisorRoutes)
 app.use('/api/admin',         adminRoutes)
-app.use('/api/ai',            aiRoutes)
-app.use('/api/projects',      aiRoutes)      // mounts /api/projects/:id/ai/* routes
-app.use('/api',               commentRoutes)
+app.use('/api',               commentRoutes)        // /api/projects/:id/comments, /api/comments/:id
 app.use('/api/users',         userRoutes)
 app.use('/api/bookmarks',     bookmarkRoutes)
 app.use('/api/notifications', notificationRoutes)
 app.use('/api',               changeRequestRoutes)
+app.use('/api/update',        updateRoutes)
 
-app.get('/api/health', (_req, res) => res.json({ status: 'ok' }))
+app.get('/api/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }))
 app.use((_req, res) => fail(res, 'Not found', 404))
 
 app.use((err, _req, res, _next) => {
@@ -94,5 +96,5 @@ app.use((err, _req, res, _next) => {
 
 const PORT = process.env.PORT || 3000
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Inquisia] Server running on port ${PORT}`)
+  console.log(`[Inquisia] Server running on port ${PORT} (${process.env.NODE_ENV || 'development'})`)
 })

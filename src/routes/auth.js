@@ -7,9 +7,6 @@ import { requireAuth } from '../middleware/auth.js'
 
 const router = Router()
 
-// ── Helpers ──────────────────────────────────────────────────
-
-/** Serialise a DB user row into the shape the frontend expects. */
 function serializeUser(row) {
   return {
     id:             row.id,
@@ -33,15 +30,12 @@ function serializeUser(row) {
   }
 }
 
-/** Write session data after successful auth. */
 function setSession(req, user) {
   req.session.userId        = user.id
   req.session.role          = user.role
   req.session.isVerified    = user.is_verified
   req.session.accountStatus = user.account_status
 }
-
-// ── Validation schemas ────────────────────────────────────────
 
 const loginSchema = z.object({
   email:    z.string().email(),
@@ -54,30 +48,26 @@ const registerSchema = z.object({
   role:          z.enum(['student', 'supervisor', 'public']),
   full_name:     z.string().max(120).optional(),
   display_name:  z.string().max(60).optional(),
-  // Student fields
   matric_no:     z.string().max(30).optional(),
   level:         z.enum(['100', '200', '300', '400', '500']).optional(),
   department_id: z.string().uuid().optional(),
-  // Supervisor fields
   staff_id:      z.string().max(40).optional(),
   degrees:       z.string().max(200).optional(),
 })
 
 // ── GET /api/auth/session ─────────────────────────────────────
-
 router.get('/session', requireAuth, asyncHandler(async (req, res) => {
   const [user] = await query('SELECT * FROM users WHERE id = $1', [req.session.userId])
   if (!user) {
     req.session.destroy(() => {})
     return fail(res, 'Session expired', 401)
   }
-  // Refresh session fields (role/status may have changed)
+  // Always refresh session fields from DB (role/status may have changed)
   setSession(req, user)
   return res.json({ success: true, user: serializeUser(user) })
 }))
 
 // ── POST /api/auth/login ──────────────────────────────────────
-
 router.post('/login', asyncHandler(async (req, res) => {
   const parsed = loginSchema.safeParse(req.body)
   if (!parsed.success) {
@@ -96,11 +86,18 @@ router.post('/login', asyncHandler(async (req, res) => {
   }
 
   setSession(req, user)
-  return res.json({ success: true, user: serializeUser(user) })
+
+  // ── CRITICAL: save session before sending response so cookie is written ──
+  req.session.save((err) => {
+    if (err) {
+      console.error('[Session save error]', err)
+      return fail(res, 'Login failed. Please try again.', 500)
+    }
+    return res.json({ success: true, user: serializeUser(user) })
+  })
 }))
 
 // ── POST /api/auth/register ───────────────────────────────────
-
 router.post('/register', asyncHandler(async (req, res) => {
   const parsed = registerSchema.safeParse(req.body)
   if (!parsed.success) {
@@ -110,13 +107,10 @@ router.post('/register', asyncHandler(async (req, res) => {
   const data = parsed.data
   const email = data.email.toLowerCase()
 
-  // Check duplicate
   const [existing] = await query('SELECT id FROM users WHERE email = $1', [email])
   if (existing) return fail(res, 'An account with this email already exists.', 409)
 
   const passwordHash = await bcrypt.hash(data.password, 12)
-
-  // Students are immediately active; supervisors need admin verification
   const isVerified = data.role !== 'supervisor'
 
   const user = await transaction(async (client) => {
@@ -130,19 +124,18 @@ router.post('/register', asyncHandler(async (req, res) => {
         email,
         passwordHash,
         data.role,
-        data.full_name   || null,
+        data.full_name    || null,
         data.display_name || null,
-        data.matric_no   || null,
-        data.staff_id    || null,
-        data.degrees     || null,
-        data.level       || null,
+        data.matric_no    || null,
+        data.staff_id     || null,
+        data.degrees      || null,
+        data.level        || null,
         data.department_id || null,
         isVerified,
       ]
     )
     const newUser = rows[0]
 
-    // If supervisor, link to department in supervisor_departments table
     if (data.role === 'supervisor' && data.department_id) {
       await client.query(
         'INSERT INTO supervisor_departments (supervisor_id, department_id) VALUES ($1,$2) ON CONFLICT DO NOTHING',
@@ -154,11 +147,18 @@ router.post('/register', asyncHandler(async (req, res) => {
   })
 
   setSession(req, user)
-  return res.status(201).json({ success: true, user: serializeUser(user) })
+
+  // ── CRITICAL: save session before sending response ────────────────────
+  req.session.save((err) => {
+    if (err) {
+      console.error('[Session save error]', err)
+      return fail(res, 'Registration failed. Please try again.', 500)
+    }
+    return res.status(201).json({ success: true, user: serializeUser(user) })
+  })
 }))
 
 // ── POST /api/auth/logout ─────────────────────────────────────
-
 router.post('/logout', (req, res) => {
   req.session.destroy(() => {
     res.clearCookie('connect.sid')

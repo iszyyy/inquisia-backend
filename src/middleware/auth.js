@@ -7,6 +7,7 @@ export function requireAuth(req, res, next) {
   next()
 }
 
+// Returns a FLAT array so it can be spread into route handlers safely
 export function requireRole(...roles) {
   return [
     requireAuth,

@@ -6,26 +6,32 @@ import { requireAuth, requireActive } from '../middleware/auth.js'
 
 const router = Router()
 
+// Whitelisted updatable fields — never build SQL from user-supplied keys
+const UPDATABLE_FIELDS = [
+  'full_name', 'display_name', 'bio', 'links',
+  'degrees', 'level', 'department_id', 'staff_id',
+]
+
 function serializeUser(row) {
   return {
-    id: row.id,
-    email: row.email,
-    role: row.role,
-    full_name: row.full_name ?? null,
-    display_name: row.display_name ?? null,
-    bio: row.bio ?? null,
-    links: row.links ?? [],
-    matric_no: row.matric_no ?? null,
-    staff_id: row.staff_id ?? null,
-    degrees: row.degrees ?? null,
-    level: row.level ?? null,
-    department_id: row.department_id ?? null,
-    is_verified: row.is_verified,
-    is_active: row.is_active,
+    id:             row.id,
+    email:          row.email,
+    role:           row.role,
+    full_name:      row.full_name ?? null,
+    display_name:   row.display_name ?? null,
+    bio:            row.bio ?? null,
+    links:          row.links ?? [],
+    matric_no:      row.matric_no ?? null,
+    staff_id:       row.staff_id ?? null,
+    degrees:        row.degrees ?? null,
+    level:          row.level ?? null,
+    department_id:  row.department_id ?? null,
+    is_verified:    row.is_verified,
+    is_active:      row.is_active,
     account_status: row.account_status,
-    status_reason: row.status_reason ?? null,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
+    status_reason:  row.status_reason ?? null,
+    created_at:     row.created_at,
+    updated_at:     row.updated_at,
   }
 }
 
@@ -37,7 +43,7 @@ router.get('/lookup', requireAuth, asyncHandler(async (req, res) => {
   const [user] = await query(
     `SELECT id, full_name, display_name, matric_no
      FROM users WHERE matric_no = $1 AND role = 'student'`,
-    [matric_no]
+    [String(matric_no).trim()]
   )
   if (!user) return fail(res, 'Student not found', 404)
   return ok(res, user)
@@ -45,10 +51,7 @@ router.get('/lookup', requireAuth, asyncHandler(async (req, res) => {
 
 // ── GET /api/users/:id ────────────────────────────────────────────────────
 router.get('/:id', asyncHandler(async (req, res) => {
-  const [user] = await query(
-    `SELECT * FROM users WHERE id=$1`,
-    [req.params.id]
-  )
+  const [user] = await query(`SELECT * FROM users WHERE id=$1`, [req.params.id])
   if (!user) return fail(res, 'User not found', 404)
   return ok(res, serializeUser(user))
 }))
@@ -60,17 +63,17 @@ router.patch('/:id', requireAuth, requireActive, asyncHandler(async (req, res) =
   }
 
   const schema = z.object({
-    full_name:    z.string().min(1).max(100).optional(),
-    display_name: z.string().max(50).optional().nullable(),
-    bio:          z.string().max(500).optional().nullable(),
-    links:        z.array(z.object({
+    full_name:     z.string().min(1).max(100).optional(),
+    display_name:  z.string().max(50).optional().nullable(),
+    bio:           z.string().max(500).optional().nullable(),
+    links:         z.array(z.object({
       title: z.string(),
       url:   z.string().url(),
     })).optional(),
-    degrees:      z.string().max(200).optional().nullable(),
-    level:        z.string().optional().nullable(),
+    degrees:       z.string().max(200).optional().nullable(),
+    level:         z.string().optional().nullable(),
     department_id: z.string().uuid().optional().nullable(),
-    staff_id:     z.string().optional().nullable(),
+    staff_id:      z.string().optional().nullable(),
   })
 
   const parsed = schema.safeParse(req.body)
@@ -78,20 +81,21 @@ router.patch('/:id', requireAuth, requireActive, asyncHandler(async (req, res) =
     return fail(res, 'Validation failed', 400, parsed.error.flatten().fieldErrors)
   }
 
+  // Only keep fields that are both in parsed data AND in the whitelist
   const fields = parsed.data
-  const keys = Object.keys(fields)
-  if (!keys.length) return fail(res, 'No fields to update', 400)
+  const safeKeys = Object.keys(fields).filter(k => UPDATABLE_FIELDS.includes(k))
+  if (!safeKeys.length) return fail(res, 'No valid fields to update', 400)
 
-  const setClauses = keys.map((k, i) => `${k}=$${i + 1}`)
-  const values = keys.map(k => fields[k])
+  const setClauses = safeKeys.map((k, i) => `${k} = $${i + 1}`)
+  const values = safeKeys.map(k => fields[k])
   values.push(req.params.id)
 
   await query(
-    `UPDATE users SET ${setClauses.join(', ')}, updated_at=NOW() WHERE id=$${values.length}`,
+    `UPDATE users SET ${setClauses.join(', ')}, updated_at = NOW() WHERE id = $${values.length}`,
     values
   )
 
-  const [updated] = await query(`SELECT * FROM users WHERE id=$1`, [req.params.id])
+  const [updated] = await query(`SELECT * FROM users WHERE id = $1`, [req.params.id])
   return ok(res, serializeUser(updated))
 }))
 

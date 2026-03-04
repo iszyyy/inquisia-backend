@@ -3,10 +3,14 @@ import express from 'express'
 import cors from 'cors'
 import morgan from 'morgan'
 import session from 'express-session'
-import connectPgSimple from 'connect-pg-simple'
-import { pool } from './lib/db.js'
+import { createClient } from 'redis'
+import connectRedis from 'connect-redis'
+const RedisStore = connectRedis.RedisStore ?? connectRedis
+import { fileURLToPath } from 'url'
+import path from 'path'
 import { fail } from './lib/response.js'
 
+// ── Route modules ────────────────────────────────────────────
 import authRoutes          from './routes/auth.js'
 import publicRoutes        from './routes/public.js'
 import projectRoutes       from './routes/projects.js'
@@ -18,10 +22,9 @@ import userRoutes          from './routes/users.js'
 import bookmarkRoutes      from './routes/bookmarks.js'
 import notificationRoutes  from './routes/notifications.js'
 import changeRequestRoutes from './routes/changeRequests.js'
-import updateRoutes        from './routes/update.js'
+import updateRoutes from './routes/update.js'
 
 const app = express()
-app.set('trust proxy', 1)
 
 // ── CORS ─────────────────────────────────────────────────────
 const allowedOrigins = (process.env.CORS_ORIGINS || '')
@@ -36,18 +39,18 @@ app.use(cors({
 }))
 
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'))
-app.use(express.json({ limit: '50mb' }))
-app.use(express.urlencoded({ extended: true, limit: '50mb' }))
+app.use(express.json({ limit: '2mb' }))
+app.use(express.urlencoded({ extended: true, limit: '2mb' }))
 
-// ── Session store (PostgreSQL) ────────────────────────────────
-const PgStore = connectPgSimple(session)
-const sessionStore = new PgStore({
-  pool,
-  tableName: 'session',
-  createTableIfMissing: false,
-})
+// ── Redis session store ───────────────────────────────────────
+const redisClient = createClient({ url: process.env.REDIS_URL || 'redis://127.0.0.1:6379' })
+redisClient.on('error', (err) => console.error('[Redis]', err))
+await redisClient.connect()
+
+const sessionStore = new RedisStore({ client: redisClient, prefix: 'inq:' })
 
 app.use(session({
+  name: 'inq.sid',
   store: sessionStore,
   secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
   resave: false,
@@ -60,29 +63,35 @@ app.use(session({
   },
 }))
 
+// ── Trust Nginx proxy ─────────────────────────────────────────
+app.set('trust proxy', 1)
+
 // ── Static files ──────────────────────────────────────────────
 const UPLOAD_DIR = process.env.UPLOAD_DIR || '/opt/inquisia-backend/uploads'
 app.use('/files', express.static(UPLOAD_DIR))
 
 // ── Routes ───────────────────────────────────────────────────
-// NOTE: Order matters. More specific paths must come before generic ones.
 app.use('/api/auth',          authRoutes)
 app.use('/api',               publicRoutes)
-app.use('/api/ai',            aiRoutes)            // /api/ai/elara, /api/ai/validate, etc.
-app.use('/api/projects',      projectRoutes)        // /api/projects/* (project CRUD)
-app.use('/api/projects',      aiRoutes)             // /api/projects/:id/ai/* (project AI)
+app.use('/api/projects',      projectRoutes)
 app.use('/api/supervisor',    supervisorRoutes)
 app.use('/api/admin',         adminRoutes)
-app.use('/api',               commentRoutes)        // /api/projects/:id/comments, /api/comments/:id
+app.use('/api/ai',            aiRoutes)
+app.use('/api',               commentRoutes)
 app.use('/api/users',         userRoutes)
 app.use('/api/bookmarks',     bookmarkRoutes)
 app.use('/api/notifications', notificationRoutes)
 app.use('/api',               changeRequestRoutes)
-app.use('/api/update',        updateRoutes)
+app.use('/api/update', updateRoutes)
 
-app.get('/api/health', (_req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }))
+// ── Health check ─────────────────────────────────────────────
+app.get('/api/health', (_req, res) => res.json({ status: 'ok' }))
+
+// ── 404 ──────────────────────────────────────────────────────
 app.use((_req, res) => fail(res, 'Not found', 404))
 
+// ── Global error handler ─────────────────────────────────────
+// eslint-disable-next-line no-unused-vars
 app.use((err, _req, res, _next) => {
   console.error('[ERROR]', err)
   if (err.code === 'LIMIT_FILE_SIZE') return fail(res, 'File too large. Maximum size is 50 MB.', 413)
@@ -94,6 +103,7 @@ app.use((err, _req, res, _next) => {
   fail(res, message, status)
 })
 
+// ── Start ─────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3000
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`[Inquisia] Server running on port ${PORT} (${process.env.NODE_ENV || 'development'})`)

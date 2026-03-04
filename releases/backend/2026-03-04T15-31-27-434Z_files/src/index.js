@@ -22,9 +22,7 @@ import userRoutes          from './routes/users.js'
 import bookmarkRoutes      from './routes/bookmarks.js'
 import notificationRoutes  from './routes/notifications.js'
 import changeRequestRoutes from './routes/changeRequests.js'
-import updateRoutes        from './routes/update.js'
-import superAdminRoutes    from './routes/superAdmin.js'
-import flagRoutes          from './routes/flags.js'
+import updateRoutes from './routes/update.js'
 
 const app = express()
 
@@ -43,9 +41,6 @@ app.use(cors({
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'))
 app.use(express.json({ limit: '2mb' }))
 app.use(express.urlencoded({ extended: true, limit: '2mb' }))
-
-// ── Trust Nginx proxy ─────────────────────────────────────────
-app.set('trust proxy', 1)
 
 // ── Redis session store ───────────────────────────────────────
 const redisClient = createClient({ url: process.env.REDIS_URL || 'redis://127.0.0.1:6379' })
@@ -68,25 +63,26 @@ app.use(session({
   },
 }))
 
+// ── Trust Nginx proxy ─────────────────────────────────────────
+app.set('trust proxy', 1)
+
 // ── Static files ──────────────────────────────────────────────
 const UPLOAD_DIR = process.env.UPLOAD_DIR || '/opt/inquisia-backend/uploads'
 app.use('/files', express.static(UPLOAD_DIR))
 
 // ── Routes ───────────────────────────────────────────────────
 app.use('/api/auth',          authRoutes)
-app.use('/api',               publicRoutes)       // /api/departments, /api/public/stats, etc.
-app.use('/api/flags',         flagRoutes)          // public feature flags
+app.use('/api',               publicRoutes)
 app.use('/api/projects',      projectRoutes)
 app.use('/api/supervisor',    supervisorRoutes)
 app.use('/api/admin',         adminRoutes)
-app.use('/api/super',         superAdminRoutes)    // super admin only
 app.use('/api/ai',            aiRoutes)
 app.use('/api',               commentRoutes)
 app.use('/api/users',         userRoutes)
 app.use('/api/bookmarks',     bookmarkRoutes)
 app.use('/api/notifications', notificationRoutes)
 app.use('/api',               changeRequestRoutes)
-app.use('/api/update',        updateRoutes)
+app.use('/api/update', updateRoutes)
 
 // ── Health check ─────────────────────────────────────────────
 app.get('/api/health', (_req, res) => res.json({ status: 'ok' }))

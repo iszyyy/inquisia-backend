@@ -7,8 +7,6 @@ import { requireAuth } from '../middleware/auth.js'
 
 const router = Router()
 
-// ── Helpers ──────────────────────────────────────────────────
-
 function serializeUser(row) {
   return {
     id:             row.id,
@@ -25,7 +23,6 @@ function serializeUser(row) {
     department_id:  row.department_id,
     is_verified:    row.is_verified,
     is_active:      row.is_active,
-    is_super_admin: row.is_super_admin ?? false,
     account_status: row.account_status,
     status_reason:  row.status_reason,
     created_at:     row.created_at,
@@ -33,16 +30,12 @@ function serializeUser(row) {
   }
 }
 
-/** Write session data after successful auth. */
 function setSession(req, user) {
   req.session.userId        = user.id
   req.session.role          = user.role
   req.session.isVerified    = user.is_verified
   req.session.accountStatus = user.account_status
-  req.session.isSuperAdmin  = user.is_super_admin ?? false
 }
-
-// ── Validation schemas ────────────────────────────────────────
 
 const loginSchema = z.object({
   email:    z.string().email(),
@@ -63,19 +56,18 @@ const registerSchema = z.object({
 })
 
 // ── GET /api/auth/session ─────────────────────────────────────
-
 router.get('/session', requireAuth, asyncHandler(async (req, res) => {
   const [user] = await query('SELECT * FROM users WHERE id = $1', [req.session.userId])
   if (!user) {
     req.session.destroy(() => {})
     return fail(res, 'Session expired', 401)
   }
+  // Always refresh session fields from DB (role/status may have changed)
   setSession(req, user)
   return res.json({ success: true, user: serializeUser(user) })
 }))
 
 // ── POST /api/auth/login ──────────────────────────────────────
-
 router.post('/login', asyncHandler(async (req, res) => {
   const parsed = loginSchema.safeParse(req.body)
   if (!parsed.success) {
@@ -94,25 +86,32 @@ router.post('/login', asyncHandler(async (req, res) => {
   }
 
   setSession(req, user)
-  return res.json({ success: true, user: serializeUser(user) })
+
+  // ── CRITICAL: save session before sending response so cookie is written ──
+  req.session.save((err) => {
+    if (err) {
+      console.error('[Session save error]', err)
+      return fail(res, 'Login failed. Please try again.', 500)
+    }
+    return res.json({ success: true, user: serializeUser(user) })
+  })
 }))
 
 // ── POST /api/auth/register ───────────────────────────────────
-
 router.post('/register', asyncHandler(async (req, res) => {
   const parsed = registerSchema.safeParse(req.body)
   if (!parsed.success) {
     return fail(res, 'Validation error', 400, parsed.error.flatten().fieldErrors)
   }
 
-  const data  = parsed.data
+  const data = parsed.data
   const email = data.email.toLowerCase()
 
   const [existing] = await query('SELECT id FROM users WHERE email = $1', [email])
   if (existing) return fail(res, 'An account with this email already exists.', 409)
 
   const passwordHash = await bcrypt.hash(data.password, 12)
-  const isVerified   = data.role !== 'supervisor'
+  const isVerified = data.role !== 'supervisor'
 
   const user = await transaction(async (client) => {
     const { rows } = await client.query(
@@ -122,7 +121,9 @@ router.post('/register', asyncHandler(async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,true,'active')
        RETURNING *`,
       [
-        email, passwordHash, data.role,
+        email,
+        passwordHash,
+        data.role,
         data.full_name    || null,
         data.display_name || null,
         data.matric_no    || null,
@@ -146,14 +147,21 @@ router.post('/register', asyncHandler(async (req, res) => {
   })
 
   setSession(req, user)
-  return res.status(201).json({ success: true, user: serializeUser(user) })
+
+  // ── CRITICAL: save session before sending response ────────────────────
+  req.session.save((err) => {
+    if (err) {
+      console.error('[Session save error]', err)
+      return fail(res, 'Registration failed. Please try again.', 500)
+    }
+    return res.status(201).json({ success: true, user: serializeUser(user) })
+  })
 }))
 
 // ── POST /api/auth/logout ─────────────────────────────────────
-
 router.post('/logout', (req, res) => {
   req.session.destroy(() => {
-    res.clearCookie('inq.sid')
+    res.clearCookie('connect.sid')
     return res.json({ success: true, data: null })
   })
 })

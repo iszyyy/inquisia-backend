@@ -185,7 +185,8 @@ async function waitForHealth(retries = 6, delayMs = 2500) {
   for (let i = 0; i < retries; i++) {
     await new Promise(r => setTimeout(r, delayMs))
     try {
-      const res  = await globalThis.fetch('http://localhost:3000/api/health', { signal: AbortSignal.timeout(5000) })
+      const { default: fetch } = await import('node-fetch').catch(() => ({ default: global.fetch }))
+      const res  = await fetch('http://localhost:3000/api/health', { timeout: 5000 })
       const json = await res.json()
       if (json.status === 'ok') return { ok: true, attempts: i + 1 }
     } catch {}

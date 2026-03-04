@@ -21,6 +21,7 @@ import changeRequestRoutes from './routes/changeRequests.js'
 
 const app = express()
 app.set('trust proxy', 1)
+
 const UPLOAD_DIR = process.env.UPLOAD_DIR || '/opt/inquisia-backend/uploads'
 
 // ── CORS ─────────────────────────────────────────────────────
@@ -56,7 +57,7 @@ app.use(session({
     httpOnly: true,
     secure: true,
     sameSite: 'none',
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+    maxAge: 7 * 24 * 60 * 60 * 1000,
   },
 }))
 
@@ -70,6 +71,7 @@ app.use('/api/projects',      projectRoutes)
 app.use('/api/supervisor',    supervisorRoutes)
 app.use('/api/admin',         adminRoutes)
 app.use('/api/ai',            aiRoutes)
+app.use('/api/projects',      aiRoutes)      // mounts /api/projects/:id/ai/* routes
 app.use('/api',               commentRoutes)
 app.use('/api/users',         userRoutes)
 app.use('/api/bookmarks',     bookmarkRoutes)

@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { query, transaction } from '../lib/db.js'
+import { query } from '../lib/db.js'
 import { ok, fail, asyncHandler } from '../lib/response.js'
 import { requireRole, requireActive } from '../middleware/auth.js'
 
@@ -8,30 +8,53 @@ const router = Router()
 
 const isAdmin = [requireRole('admin'), requireActive]
 
-// ── Shared project SELECT ─────────────────────────────────────────────────
+function serializeUser(row) {
+  return {
+    id: row.id,
+    email: row.email,
+    role: row.role,
+    full_name: row.full_name ?? null,
+    display_name: row.display_name ?? null,
+    bio: row.bio ?? null,
+    links: row.links ?? [],
+    matric_no: row.matric_no ?? null,
+    staff_id: row.staff_id ?? null,
+    degrees: row.degrees ?? null,
+    level: row.level ?? null,
+    department_id: row.department_id ?? null,
+    is_verified: row.is_verified,
+    is_active: row.is_active,
+    account_status: row.account_status,
+    status_reason: row.status_reason ?? null,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+    project_count: parseInt(row.project_count ?? 0),
+  }
+}
+
 const PROJECT_SELECT = `
   SELECT
     p.*,
-    d.name                        AS department_name,
-    sv.full_name                  AS supervisor_name,
-    sv.degrees                    AS supervisor_degrees,
+    d.name AS department_name,
+    sv.full_name AS supervisor_name,
+    sv.degrees AS supervisor_degrees,
     COALESCE(
       json_agg(
         json_build_object(
-          'id',               u.id,
-          'full_name',        u.full_name,
-          'display_name',     u.display_name,
-          'matric_no',        u.matric_no,
+          'id', u.id,
+          'full_name', u.full_name,
+          'display_name', u.display_name,
+          'matric_no', u.matric_no,
           'role_description', pa.role_description
         ) ORDER BY pa.is_lead DESC, u.full_name
       ) FILTER (WHERE u.id IS NOT NULL),
       '[]'
     ) AS authors
   FROM projects p
-  LEFT JOIN departments d      ON d.id = p.department_id
-  LEFT JOIN users sv           ON sv.id = p.supervisor_id
+  LEFT JOIN departments d ON d.id = p.department_id
+  LEFT JOIN users sv ON sv.id = p.supervisor_id
   LEFT JOIN project_authors pa ON pa.project_id = p.id
-  LEFT JOIN users u            ON u.id = pa.user_id
+  LEFT JOIN users u ON u.id = pa.user_id
 `
 
 function serializeProject(row) {
@@ -66,11 +89,7 @@ function serializeProject(row) {
   }
 }
 
-// ════════════════════════════════════════════════════════════
-//  USERS
-// ════════════════════════════════════════════════════════════
-
-// GET /api/admin/users
+// ── GET /api/admin/users ──────────────────────────────────────────────────
 router.get('/users', ...isAdmin, asyncHandler(async (req, res) => {
   const { query: q, role, status } = req.query
 
@@ -97,43 +116,19 @@ router.get('/users', ...isAdmin, asyncHandler(async (req, res) => {
   const WHERE = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
 
   const rows = await query(
-    `SELECT
-       u.*,
-       COUNT(DISTINCT pa.project_id)::int AS project_count
+    `SELECT u.*,
+       (SELECT COUNT(*) FROM project_authors pa WHERE pa.user_id = u.id)::int AS project_count
      FROM users u
-     LEFT JOIN project_authors pa ON pa.user_id = u.id
      ${WHERE}
-     GROUP BY u.id
-     ORDER BY u.created_at DESC`,
+     ORDER BY u.created_at DESC
+     LIMIT 200`,
     params
   )
 
-  const users = rows.map(u => ({
-    id: u.id,
-    email: u.email,
-    role: u.role,
-    full_name: u.full_name,
-    display_name: u.display_name,
-    bio: u.bio,
-    links: u.links ?? [],
-    matric_no: u.matric_no,
-    staff_id: u.staff_id,
-    degrees: u.degrees,
-    level: u.level,
-    department_id: u.department_id,
-    is_verified: u.is_verified,
-    is_active: u.is_active,
-    account_status: u.account_status,
-    status_reason: u.status_reason,
-    created_at: u.created_at,
-    updated_at: u.updated_at,
-    project_count: u.project_count,
-  }))
-
-  return ok(res, users)
+  return ok(res, rows.map(serializeUser))
 }))
 
-// PATCH /api/admin/users/:id/status
+// ── PATCH /api/admin/users/:id/status ────────────────────────────────────
 router.patch('/users/:id/status', ...isAdmin, asyncHandler(async (req, res) => {
   const schema = z.object({
     status: z.enum(['active', 'warned', 'restricted', 'banned']),
@@ -142,58 +137,44 @@ router.patch('/users/:id/status', ...isAdmin, asyncHandler(async (req, res) => {
   const parsed = schema.safeParse(req.body)
   if (!parsed.success) return fail(res, 'Validation failed', 400, parsed.error.flatten().fieldErrors)
 
-  const { status, reason } = parsed.data
-
-  const [user] = await query(
-    `UPDATE users SET account_status=$1, status_reason=$2, updated_at=NOW()
-     WHERE id=$3 RETURNING *`,
-    [status, reason, req.params.id]
-  )
+  const [user] = await query(`SELECT id FROM users WHERE id=$1`, [req.params.id])
   if (!user) return fail(res, 'User not found', 404)
 
-  // Notify the user
   await query(
-    `INSERT INTO notifications (user_id, type, title, message)
-     VALUES ($1,'project_rejected',$2,$3)`,
-    [user.id, `Account Status Updated`, reason]
+    `UPDATE users SET account_status=$1, status_reason=$2, updated_at=NOW() WHERE id=$3`,
+    [parsed.data.status, parsed.data.reason, req.params.id]
   )
 
-  return ok(res, {
-    id: user.id, email: user.email, role: user.role,
-    account_status: user.account_status, status_reason: user.status_reason,
-    full_name: user.full_name, is_verified: user.is_verified,
-    created_at: user.created_at, updated_at: user.updated_at,
-  })
-}))
-
-// PATCH /api/admin/users/:id/verify — verify a supervisor
-router.patch('/users/:id/verify', ...isAdmin, asyncHandler(async (req, res) => {
-  const [user] = await query(
-    `UPDATE users SET is_verified=true, updated_at=NOW()
-     WHERE id=$1 AND role='supervisor' RETURNING *`,
+  const [updated] = await query(
+    `SELECT u.*,
+       (SELECT COUNT(*) FROM project_authors pa WHERE pa.user_id = u.id)::int AS project_count
+     FROM users u WHERE u.id=$1`,
     [req.params.id]
   )
-  if (!user) return fail(res, 'Supervisor not found', 404)
-
-  await query(
-    `INSERT INTO notifications (user_id, type, title, message)
-     VALUES ($1,'project_approved','Account Verified','Your supervisor account has been verified. You can now review student projects.')`,
-    [user.id]
-  )
-
-  return ok(res, {
-    id: user.id, email: user.email, role: user.role,
-    is_verified: user.is_verified, full_name: user.full_name,
-    account_status: user.account_status, created_at: user.created_at,
-    updated_at: user.updated_at,
-  })
+  return ok(res, serializeUser(updated))
 }))
 
-// ════════════════════════════════════════════════════════════
-//  PROJECTS
-// ════════════════════════════════════════════════════════════
+// ── PATCH /api/admin/users/:id/verify — verify a supervisor ──────────────
+router.patch('/users/:id/verify', ...isAdmin, asyncHandler(async (req, res) => {
+  const [user] = await query(`SELECT id, role FROM users WHERE id=$1`, [req.params.id])
+  if (!user) return fail(res, 'User not found', 404)
+  if (user.role !== 'supervisor') return fail(res, 'Only supervisors can be verified', 400)
 
-// GET /api/admin/projects
+  await query(
+    `UPDATE users SET is_verified=true, updated_at=NOW() WHERE id=$1`,
+    [req.params.id]
+  )
+
+  const [updated] = await query(
+    `SELECT u.*,
+       (SELECT COUNT(*) FROM project_authors pa WHERE pa.user_id = u.id)::int AS project_count
+     FROM users u WHERE u.id=$1`,
+    [req.params.id]
+  )
+  return ok(res, serializeUser(updated))
+}))
+
+// ── GET /api/admin/projects ───────────────────────────────────────────────
 router.get('/projects', ...isAdmin, asyncHandler(async (req, res) => {
   const { query: q, status, department_id } = req.query
 
@@ -223,14 +204,15 @@ router.get('/projects', ...isAdmin, asyncHandler(async (req, res) => {
     `${PROJECT_SELECT}
      ${WHERE}
      GROUP BY p.id, d.name, sv.full_name, sv.degrees
-     ORDER BY p.updated_at DESC`,
+     ORDER BY p.updated_at DESC
+     LIMIT 200`,
     params
   )
 
   return ok(res, rows.map(serializeProject))
 }))
 
-// PATCH /api/admin/projects/:id/status — admin force approve/reject
+// ── PATCH /api/admin/projects/:id/status — admin force approve/reject ────
 router.patch('/projects/:id/status', ...isAdmin, asyncHandler(async (req, res) => {
   const schema = z.object({
     status: z.enum(['approved', 'rejected', 'pending', 'changes_requested']),
@@ -239,74 +221,63 @@ router.patch('/projects/:id/status', ...isAdmin, asyncHandler(async (req, res) =
   const parsed = schema.safeParse(req.body)
   if (!parsed.success) return fail(res, 'Validation failed', 400, parsed.error.flatten().fieldErrors)
 
-  const { status, reason } = parsed.data
-  const { id } = req.params
-
-  const [project] = await query(`SELECT * FROM projects WHERE id=$1`, [id])
+  const [project] = await query(`SELECT id FROM projects WHERE id=$1`, [req.params.id])
   if (!project) return fail(res, 'Project not found', 404)
 
-  const approved_at = status === 'approved' ? `NOW()` : `approved_at`
+  const approved_at = parsed.data.status === 'approved' ? 'NOW()' : 'approved_at'
 
-  await transaction(async (client) => {
-    await client.query(
-      `UPDATE projects SET status=$1, updated_at=NOW(), approved_at=${approved_at} WHERE id=$2`,
-      [status, id]
-    )
+  await query(
+    `UPDATE projects SET status=$1, updated_at=NOW(), approved_at=${approved_at} WHERE id=$2`,
+    [parsed.data.status, req.params.id]
+  )
 
-    // Update latest version
-    await client.query(
-      `UPDATE project_versions SET status=$1
-       WHERE project_id=$2 AND version_number=(
-         SELECT MAX(version_number) FROM project_versions WHERE project_id=$2
-       )`,
-      [status, id]
-    )
-
-    // Notify lead author
-    const [lead] = await client.query(
+  // Notify lead author if reason provided
+  if (parsed.data.reason) {
+    const [lead] = await query(
       `SELECT user_id FROM project_authors WHERE project_id=$1 AND is_lead=true LIMIT 1`,
-      [id]
-    ).then(r => r.rows)
-
-    if (lead && reason) {
+      [req.params.id]
+    )
+    if (lead) {
       const typeMap = {
         approved:          'project_approved',
         rejected:          'project_rejected',
         changes_requested: 'changes_requested',
-        pending:           'project_approved',
+        pending:           'changes_requested',
       }
-      await client.query(
+      await query(
         `INSERT INTO notifications (user_id, type, title, message, link)
-         VALUES ($1,$2,'Admin Action',$3,$4)`,
-        [lead.user_id, typeMap[status] || 'project_approved', reason, `/projects/${id}`]
+         VALUES ($1,$2,$3,$4,$5)`,
+        [
+          lead.user_id,
+          typeMap[parsed.data.status],
+          `Project status updated to ${parsed.data.status}`,
+          parsed.data.reason,
+          `/projects/${req.params.id}`,
+        ]
       )
     }
-  })
+  }
 
   const rows = await query(
     `${PROJECT_SELECT} WHERE p.id=$1 GROUP BY p.id, d.name, sv.full_name, sv.degrees`,
-    [id]
+    [req.params.id]
   )
   return ok(res, serializeProject(rows[0]))
 }))
 
-// ════════════════════════════════════════════════════════════
-//  DEPARTMENTS
-// ════════════════════════════════════════════════════════════
-
-// GET /api/admin/departments
+// ── GET /api/admin/departments ────────────────────────────────────────────
 router.get('/departments', ...isAdmin, asyncHandler(async (req, res) => {
   const rows = await query(`SELECT * FROM departments ORDER BY name`)
   return ok(res, rows)
 }))
 
-// POST /api/admin/departments
+// ── POST /api/admin/departments ───────────────────────────────────────────
 router.post('/departments', ...isAdmin, asyncHandler(async (req, res) => {
   const schema = z.object({ name: z.string().min(2).max(100) })
   const parsed = schema.safeParse(req.body)
   if (!parsed.success) return fail(res, 'Validation failed', 400, parsed.error.flatten().fieldErrors)
 
-  const [existing] = await query(`SELECT id FROM departments WHERE LOWER(name)=LOWER($1)`, [parsed.data.name])
+  const [existing] = await query(`SELECT id FROM departments WHERE name ILIKE $1`, [parsed.data.name])
   if (existing) return fail(res, 'Department already exists', 409)
 
   const [dept] = await query(
@@ -316,50 +287,50 @@ router.post('/departments', ...isAdmin, asyncHandler(async (req, res) => {
   return ok(res, dept, 201)
 }))
 
-// PUT /api/admin/departments/:id
+// ── PUT /api/admin/departments/:id ────────────────────────────────────────
 router.put('/departments/:id', ...isAdmin, asyncHandler(async (req, res) => {
   const schema = z.object({ name: z.string().min(2).max(100) })
   const parsed = schema.safeParse(req.body)
   if (!parsed.success) return fail(res, 'Validation failed', 400, parsed.error.flatten().fieldErrors)
 
-  const [dept] = await query(
+  const [dept] = await query(`SELECT id FROM departments WHERE id=$1`, [req.params.id])
+  if (!dept) return fail(res, 'Department not found', 404)
+
+  const [updated] = await query(
     `UPDATE departments SET name=$1 WHERE id=$2 RETURNING *`,
     [parsed.data.name, req.params.id]
   )
-  if (!dept) return fail(res, 'Department not found', 404)
-  return ok(res, dept)
+  return ok(res, updated)
 }))
 
-// DELETE /api/admin/departments/:id
+// ── DELETE /api/admin/departments/:id ─────────────────────────────────────
 router.delete('/departments/:id', ...isAdmin, asyncHandler(async (req, res) => {
+  const [dept] = await query(`SELECT id FROM departments WHERE id=$1`, [req.params.id])
+  if (!dept) return fail(res, 'Department not found', 404)
+
   const [inUse] = await query(
     `SELECT id FROM projects WHERE department_id=$1 LIMIT 1`,
     [req.params.id]
   )
-  if (inUse) return fail(res, 'Cannot delete a department that has projects', 400)
+  if (inUse) return fail(res, 'Cannot delete department with existing projects', 400)
 
-  const [dept] = await query(`DELETE FROM departments WHERE id=$1 RETURNING id`, [req.params.id])
-  if (!dept) return fail(res, 'Department not found', 404)
+  await query(`DELETE FROM departments WHERE id=$1`, [req.params.id])
   return ok(res, null)
 }))
 
-// ════════════════════════════════════════════════════════════
-//  AI CATEGORIES
-// ════════════════════════════════════════════════════════════
-
-// GET /api/admin/ai-categories
+// ── GET /api/admin/ai-categories ─────────────────────────────────────────
 router.get('/ai-categories', ...isAdmin, asyncHandler(async (req, res) => {
-  const rows = await query(`SELECT name FROM ai_categories ORDER BY name`)
+  const rows = await query(`SELECT * FROM ai_categories ORDER BY name`)
   return ok(res, rows)
 }))
 
-// POST /api/admin/ai-categories
+// ── POST /api/admin/ai-categories ────────────────────────────────────────
 router.post('/ai-categories', ...isAdmin, asyncHandler(async (req, res) => {
   const schema = z.object({ name: z.string().min(2).max(100) })
   const parsed = schema.safeParse(req.body)
   if (!parsed.success) return fail(res, 'Validation failed', 400, parsed.error.flatten().fieldErrors)
 
-  const [existing] = await query(`SELECT name FROM ai_categories WHERE LOWER(name)=LOWER($1)`, [parsed.data.name])
+  const [existing] = await query(`SELECT name FROM ai_categories WHERE name ILIKE $1`, [parsed.data.name])
   if (existing) return fail(res, 'Category already exists', 409)
 
   const [cat] = await query(
@@ -369,31 +340,28 @@ router.post('/ai-categories', ...isAdmin, asyncHandler(async (req, res) => {
   return ok(res, cat, 201)
 }))
 
-// PUT /api/admin/ai-categories/:id
+// ── PUT /api/admin/ai-categories/:id ─────────────────────────────────────
 router.put('/ai-categories/:id', ...isAdmin, asyncHandler(async (req, res) => {
   const schema = z.object({ name: z.string().min(2).max(100) })
   const parsed = schema.safeParse(req.body)
   if (!parsed.success) return fail(res, 'Validation failed', 400, parsed.error.flatten().fieldErrors)
 
-  // ai_categories uses name as PK
-  const [cat] = await query(
+  const [existing] = await query(`SELECT name FROM ai_categories WHERE name=$1`, [req.params.id])
+  if (!existing) return fail(res, 'Category not found', 404)
+
+  const [updated] = await query(
     `UPDATE ai_categories SET name=$1 WHERE name=$2 RETURNING *`,
     [parsed.data.name, req.params.id]
   )
-  if (!cat) return fail(res, 'Category not found', 404)
-  return ok(res, cat)
+  return ok(res, updated)
 }))
 
-// DELETE /api/admin/ai-categories/:id
+// ── DELETE /api/admin/ai-categories/:id ──────────────────────────────────
 router.delete('/ai-categories/:id', ...isAdmin, asyncHandler(async (req, res) => {
-  const [inUse] = await query(
-    `SELECT id FROM projects WHERE ai_category=$1 LIMIT 1`,
-    [req.params.id]
-  )
-  if (inUse) return fail(res, 'Cannot delete a category that has projects', 400)
+  const [existing] = await query(`SELECT name FROM ai_categories WHERE name=$1`, [req.params.id])
+  if (!existing) return fail(res, 'Category not found', 404)
 
-  const [cat] = await query(`DELETE FROM ai_categories WHERE name=$1 RETURNING name`, [req.params.id])
-  if (!cat) return fail(res, 'Category not found', 404)
+  await query(`DELETE FROM ai_categories WHERE name=$1`, [req.params.id])
   return ok(res, null)
 }))
 

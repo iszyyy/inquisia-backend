@@ -3,10 +3,8 @@ import express from 'express'
 import cors from 'cors'
 import morgan from 'morgan'
 import session from 'express-session'
-import { createClient } from 'redis'
-import connectRedis from 'connect-redis'
-import { fileURLToPath } from 'url'
-import path from 'path'
+import connectPgSimple from 'connect-pg-simple'
+import { pool } from './lib/db.js'
 import { fail } from './lib/response.js'
 
 import authRoutes          from './routes/auth.js'
@@ -22,9 +20,10 @@ import notificationRoutes  from './routes/notifications.js'
 import changeRequestRoutes from './routes/changeRequests.js'
 
 const app = express()
+app.set('trust proxy', 1)
 const UPLOAD_DIR = process.env.UPLOAD_DIR || '/opt/inquisia-backend/uploads'
 
-// ── CORS — allow same domain + localhost dev ──────────────────
+// ── CORS ─────────────────────────────────────────────────────
 const allowedOrigins = (process.env.CORS_ORIGINS || '')
   .split(',').map(o => o.trim()).filter(Boolean)
 
@@ -40,13 +39,13 @@ app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'))
 app.use(express.json({ limit: '2mb' }))
 app.use(express.urlencoded({ extended: true, limit: '2mb' }))
 
-// ── Redis session store ───────────────────────────────────────
-const redisClient = createClient({ url: process.env.REDIS_URL || 'redis://127.0.0.1:6379' })
-redisClient.on('error', (err) => console.error('[Redis]', err))
-await redisClient.connect()
-
-const RedisStore = connectRedis.default ? connectRedis.default : connectRedis
-const sessionStore = new RedisStore({ client: redisClient, prefix: 'inq:' })
+// ── Session store (PostgreSQL) ────────────────────────────────
+const PgStore = connectPgSimple(session)
+const sessionStore = new PgStore({
+  pool,
+  tableName: 'session',
+  createTableIfMissing: false,
+})
 
 app.use(session({
   store: sessionStore,
@@ -57,7 +56,7 @@ app.use(session({
     httpOnly: true,
     secure: true,
     sameSite: 'none',
-    maxAge: 7 * 24 * 60 * 60 * 1000,
+    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   },
 }))
 
